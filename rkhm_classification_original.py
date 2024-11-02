@@ -18,7 +18,7 @@ lam1 = 1  # Perron-Frobenius regularlization parameter
 lam2 = 0.001  # regularlization parameter for ||f_L||
 dim = np.array([7, 4])  # dimension of blocks for each layer
 dim1 = np.array(
-    [2, 4]
+    [3, 3]
 )  # dimension of blocks of the parameter a_j for each layer j
 
 ind = np.arange(0, fnum, 1, dtype=np.int32)
@@ -178,7 +178,7 @@ def opti(label, c1, dense, opt, xtestdata, G, Gtest, Gtmp):
         acctest = 1 - tf.math.count_nonzero(indx - indx1) / len(indx)
 
         grad = tape.gradient(lossreg, c1 + trainable_vars)
-        opt.apply_gradients(zip(grad, c1 + trainable_vars))
+        opt.apply_gradients(zip(grad, c1 + trainable_vars))s
 
         return acc, acctest
 
@@ -187,7 +187,8 @@ if __name__ == "__main__":
 
     # Import MNIST data
     mnist = tf.keras.datasets.mnist
-    (ydata, label), _ = mnist.load_data()
+    cifar10 = tf.keras.datasets.cifar10
+    (ydata, label), _ = cifar10.load_data()
     ydata = ydata / np.float64(255.0)
 
     print("Shape of the data:", ydata.shape)
@@ -275,7 +276,7 @@ if __name__ == "__main__":
 
     dense = NN(d)
     dense.model(tf.zeros((1, d * d), dtype=tf.float32))
-    opt = tf.keras.optimizers.Adam(1e-3)
+    opt = tf.keras.optimizers.SGD(1e-4)
     print("Start training with model :", L, "layers")
 
     for epoch in range(1, epochs + 1, 1):
