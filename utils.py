@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import numpy.random as nr
 
 
 def tf_kron(a, b):
@@ -39,3 +40,23 @@ def one_hot_encoding(y, n_classes):
     for i in range(n_classes):
         index[i] = list(np.where(y == i))[0]
         one_hot_labels[index[i], i] = np.ones(len(index[i]))
+
+    return one_hot_labels
+
+
+def init_kernel_weights(d, n_kernel, n_layers, dim):
+    weights = []  # Called c1 in the original code
+    for j in range(n_layers):
+        weights.append(np.zeros((d * n_kernel, d)))
+
+    for k in range(n_layers):
+        for i in range(n_kernel):
+            for j in range(int(d / dim[k])):
+                weights[k][
+                    i * d + j * dim[k] : i * d + (j + 1) * dim[k],
+                    j * dim[k] : (j + 1) * dim[k],
+                ] = 0.1 * nr.randn(dim[k], dim[k])
+
+    for j in range(n_layers):
+        weights[j] = tf.Variable(weights[j], dtype=tf.float32)
+    return weights
