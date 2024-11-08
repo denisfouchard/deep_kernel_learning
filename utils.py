@@ -3,6 +3,17 @@ import numpy as np
 import numpy.random as nr
 
 
+def evaluate(y_true, y_pred_train, y_pred_test):
+    indx = tf.math.argmax(y_pred_train, axis=1)
+    indx1 = tf.math.argmax(y_true, axis=1)
+    training_accuracy = 1 - tf.math.count_nonzero(indx - indx1) / len(indx)
+
+    indx = tf.math.argmax(y_pred_test, axis=1)
+    indx1 = tf.math.argmax(labeltest, axis=1)
+    test_accuracy = 1 - tf.math.count_nonzero(indx - indx1) / len(indx)
+    return training_accuracy, test_accuracy
+
+
 def tf_kron(a, b):
     """
     Computes the Kronecker product of two 2D tensors.
@@ -44,19 +55,17 @@ def one_hot_encoding(y, n_classes):
     return one_hot_labels
 
 
-def init_kernel_weights(d, n_kernel, n_layers, dim):
-    weights = []  # Called c1 in the original code
-    for j in range(n_layers):
-        weights.append(np.zeros((d * n_kernel, d)))
-
-    for k in range(n_layers):
+def init_kernel_weights(d, n_kernel, dim):
+    layer_weights = []  # Called c1 in the original code
+    for weight_size in dim:
+        weights_k = np.zeros((d * n_kernel, d))
         for i in range(n_kernel):
-            for j in range(int(d / dim[k])):
-                weights[k][
-                    i * d + j * dim[k] : i * d + (j + 1) * dim[k],
-                    j * dim[k] : (j + 1) * dim[k],
-                ] = 0.1 * nr.randn(dim[k], dim[k])
-
-    for j in range(n_layers):
-        weights[j] = tf.Variable(weights[j], dtype=tf.float32)
-    return weights
+            n_blocks = int(d / weight_size)
+            for j in range(n_blocks):
+                weights_k[
+                    i * d + j * weight_size : i * d + (j + 1) * weight_size,
+                    j * weight_size : (j + 1) * weight_size,
+                ] = 0.1 * nr.randn(weight_size, weight_size)
+        weights_k = tf.Variable(weights_k, dtype=tf.float32)
+        layer_weights.append(weights_k)
+    return layer_weights

@@ -4,7 +4,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 from tensorflow.keras.models import Model
 import numpy as np
-from utils import tf_kron, one_hot_encoding, init_kernel_weights
+from utils import tf_kron, one_hot_encoding, init_kernel_weights, evaluate
 
 d = 28  # We focus on the C*-algebra of d by d matrices and its C*-subalgebras
 n_train = 200  # number of training samples
@@ -16,27 +16,27 @@ n_layers = 2  # number of the layers
 lam1 = 1  # Perron-Frobenius regularlization parameter
 lam2 = 0.001  # regularlization parameter for ||f_L||
 dim = np.array([7, 4])  # dimension of blocks for each layer
-dim1 = np.array(
-    [2, 4]
-)  # dimension of blocks of the parameter a_j for each layer j
+dim1 = np.array([2, 4])  # dimension of blocks of the parameter a_j for each layer j
 
 ind = np.arange(0, n_kernel, 1, dtype=np.int32)
 
 
-def C_algebra(d: int, L, dim1):
-    a = []
-    j = 0
-    for j in range(L):
-        a.append(np.zeros((d, d)))
-        for i in range(int(d / dim1[j])):
-            a[j][
-                dim1[j] * i : dim1[j] * (i + 1), dim1[j] * i : dim1[j] * (i + 1)
-            ] = np.ones((dim1[j], dim1[j]))
-        a[j] = tf.constant(a[j], tf.float32)
-    return a
+def initialize_block_matrix_layers(d, dim1):
+    layer_block_matrices = []
+    for block_size in dim1:
+        block_mat = np.zeros((d, d))
+        n_blocks = int(d / block_size)
+        for i in range(n_blocks):
+            block_mat[
+                block_size * i : block_size * (i + 1),
+                block_size * i : block_size * (i + 1),
+            ] = np.ones((block_size, block_size))
+        block_mat = tf.constant(block_mat, tf.float32)
+        layer_block_matrices.append(block_mat)
+    return layer_block_matrices
 
 
-block_matrix_algebra = C_algebra(d, n_layers, dim1)
+layer_block_matrices = initialize_block_matrix_layers(d, dim1)
 
 
 class MLP_Classifier(Model):
@@ -53,7 +53,7 @@ class MLP_Classifier(Model):
 
 
 @tf.function
-def frobenius_loss(y, y_pred, c1, Gpre, GGtmp, n_train: int):
+def frobenius_loss(y, y_pred, c1, Gpre, GGtmp):
     reg1 = lam1 * (
         tf.norm(Gpre[n_layers - 1], 2)
         + tf.norm(
@@ -76,8 +76,8 @@ def frobenius_loss(y, y_pred, c1, Gpre, GGtmp, n_train: int):
     )
 
     reg = reg1 + reg2
-
-    loss = tf.norm(tf.matmul(tf.transpose(y - y_pred), y_pred - y), 2) / n_train
+    n = y.shape[0]
+    loss = tf.norm(tf.matmul(tf.transpose(y - y_pred), y_pred - y), 2) / n
 
     lossreg = loss + reg
     return lossreg
@@ -85,131 +85,118 @@ def frobenius_loss(y, y_pred, c1, Gpre, GGtmp, n_train: int):
 
 @tf.function
 def opti(
-    y,
+    y_train,
+    y_test,
+    y_pred_train,
+    y_pred_test,
     c1,
     dense,
     optimizer,
-    kernel_gram,
-    Gtest,
-    Gtmp,
     n_train: int,
-    n_test: int,
-    algebra_matrix,
 ):
     with tf.GradientTape(persistent=True) as tape:
         # Ensure dense.trainable_variables are tf.Variables
         trainable_vars = dense.trainable_variables
 
-        ydata = tf.matmul(kernel_gram, c1[0])
-        ytestdata = tf.matmul(Gtest, c1[0])
-        Gpre = []
-        GGtmp = tf.gather(Gtmp, indices=ind)
-        Gpre.append(GGtmp)
+        loss = frobenius_loss(y_train, y_pred_train, c1, Gpre, GGtmp)
 
-        features = ydata[ind[0] * d : (ind[0] + 1) * d, :]
-        for i in range(n_kernel - 1):
-            features = tf.concat(
-                [features, ydata[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]],
-                axis=0,
-            )
-
-        for j in range(0, n_layers - 1, 1):
-            ytmp = tf.matmul(ydata, algebra_matrix[j + 1])
-            ytesttmp = tf.matmul(ytestdata, algebra_matrix[j + 1])
-            ftmp = tf.matmul(features, algebra_matrix[j + 1])
-            tmp1 = tf.reshape(ytmp, [1, n_train, d * d])
-            tmp1test = tf.reshape(ytesttmp, [1, n_test, d * d])
-            tmpf = tf.reshape(ftmp, [1, n_kernel, d * d])
-            for i in range(n_kernel - 1):
-                tmp1 = tf.concat(
-                    [tmp1, tf.reshape(ytmp, [1, n_train, d * d])], axis=0
-                )
-            for i in range(n_kernel - 1):
-                tmp1test = tf.concat(
-                    [tmp1test, tf.reshape(ytesttmp, [1, n_test, d * d])],
-                    axis=0,
-                )
-            for i in range(n_test - 1):
-                tmpf = tf.concat(
-                    [tmpf, tf.reshape(ftmp, [1, n_kernel, d * d])], axis=0
-                )
-
-            gaussian_kernel_matrix = tf.math.exp(
-                -c
-                * tf.reduce_sum(
-                    abs(tf.transpose(tmp1, (1, 0, 2)) - tmpf[0:n_train, :, :]),
-                    axis=2,
-                )
-            )
-            GGtmp = tf.gather(gaussian_kernel_matrix, indices=ind)
-            gaussian_kernel_matrix = tf_kron(
-                gaussian_kernel_matrix, tf.eye(d)
-            ) * tf.matmul(ydata, tf.transpose(features, (1, 0)))
-
-            Gpre.append(GGtmp)
-            GGtest = tf.math.exp(
-                -c
-                * tf.reduce_sum(
-                    abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2
-                )
-            )
-            GGtest = tf_kron(GGtest, tf.eye(d)) * tf.matmul(
-                ytestdata, tf.transpose(features, (1, 0))
-            )
-
-            ydata = tf.matmul(gaussian_kernel_matrix, c1[j + 1])
-            ytestdata = tf.matmul(GGtest, c1[j + 1])
-            features = ydata[ind[0] * d : (ind[0] + 1) * d, :]
-            for i in range(n_kernel - 1):
-                features = tf.concat(
-                    [features, ydata[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]],
-                    axis=0,
-                )
-
-        y_pred_train = dense.call(tf.reshape(ydata, [n_train, d * d]))
-        y_pred_test = dense.call(tf.reshape(ytestdata, [n_test, d * d]))
-
-        loss = frobenius_loss(y, y_pred_train, c1, Gpre, GGtmp, n_train)
-
-        indx = tf.math.argmax(y_pred_train, axis=1)
-        indx1 = tf.math.argmax(y, axis=1)
-        acc = 1 - tf.math.count_nonzero(indx - indx1) / len(indx)
-
-        indx = tf.math.argmax(y_pred_test, axis=1)
-        indx1 = tf.math.argmax(labeltest, axis=1)
-        acctest = 1 - tf.math.count_nonzero(indx - indx1) / len(indx)
+        training_accuracy = evaluate(y_train, y_pred_train)
+        test_accuracy = evaluate(y_test, y_pred_test)
 
         grad = tape.gradient(loss, c1 + trainable_vars)
         optimizer.apply_gradients(zip(grad, c1 + trainable_vars))
 
-        return acc, acctest
+        return training_accuracy, test_accuracy
 
 
-def prepare_data(
+@tf.function
+def forward(c1, dense, kernel_gram, Gtest, Gtmp, n_train, n_test, layer_block_matrices):
+    z_train = tf.matmul(kernel_gram, c1[0])
+    z_test = tf.matmul(Gtest, c1[0])
+    Gpre = []
+    GGtmp = tf.gather(Gtmp, indices=ind)
+    Gpre.append(GGtmp)
+
+    features = z_train[ind[0] * d : (ind[0] + 1) * d, :]
+    for i in range(n_kernel - 1):
+        features = tf.concat(
+            [features, z_train[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]],
+            axis=0,
+        )
+
+    for j in range(0, n_layers - 1, 1):
+        ytmp = tf.matmul(z_train, layer_block_matrices[j + 1])
+        ytesttmp = tf.matmul(z_test, layer_block_matrices[j + 1])
+        ftmp = tf.matmul(features, layer_block_matrices[j + 1])
+        tmp1 = tf.reshape(ytmp, [1, n_train, d * d])
+        tmp1test = tf.reshape(ytesttmp, [1, n_test, d * d])
+        tmpf = tf.reshape(ftmp, [1, n_kernel, d * d])
+        for i in range(n_kernel - 1):
+            tmp1 = tf.concat([tmp1, tf.reshape(ytmp, [1, n_train, d * d])], axis=0)
+        for i in range(n_kernel - 1):
+            tmp1test = tf.concat(
+                [tmp1test, tf.reshape(ytesttmp, [1, n_test, d * d])],
+                axis=0,
+            )
+        for i in range(n_test - 1):
+            tmpf = tf.concat([tmpf, tf.reshape(ftmp, [1, n_kernel, d * d])], axis=0)
+
+        gaussian_kernel_matrix = tf.math.exp(
+            -c
+            * tf.reduce_sum(
+                abs(tf.transpose(tmp1, (1, 0, 2)) - tmpf[0:n_train, :, :]),
+                axis=2,
+            )
+        )
+        GGtmp = tf.gather(gaussian_kernel_matrix, indices=ind)
+        gaussian_kernel_matrix = tf_kron(gaussian_kernel_matrix, tf.eye(d)) * tf.matmul(
+            z_train, tf.transpose(features, (1, 0))
+        )
+
+        Gpre.append(GGtmp)
+        GGtest = tf.math.exp(
+            -c * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
+        )
+        GGtest = tf_kron(GGtest, tf.eye(d)) * tf.matmul(
+            z_test, tf.transpose(features, (1, 0))
+        )
+
+        z_train = tf.matmul(gaussian_kernel_matrix, c1[j + 1])
+        z_test = tf.matmul(GGtest, c1[j + 1])
+        features = z_train[ind[0] * d : (ind[0] + 1) * d, :]
+        for i in range(n_kernel - 1):
+            features = tf.concat(
+                [features, z_train[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]],
+                axis=0,
+            )
+
+    # Train the weights of the kernel
+    y_pred_train = dense(tf.reshape(z_train, [n_train, d * d]))
+    y_pred_test = dense(tf.reshape(z_test, [n_test, d * d]))
+    return y_pred_train, y_pred_test, Gpre, GGtmp
+
+
+def train_test_split(
     d: int,
     n_train: int,
     n_kernel: int,
     n_test: int,
-    c,
-    n_layers: int,
-    dim,
     ind,
-    algebra_matrix,
-    X,
-    y,
+    imgs,
+    labels,
     n_classes=10,
 ):
     features = np.zeros((n_kernel, d, d))
 
-    X_train = X[0:n_train, :, :]
+    X_train = imgs[0:n_train, :, :]
 
-    one_hot = one_hot_encoding(y, n_classes)
+    one_hot = one_hot_encoding(labels, n_classes)
 
     ymat = one_hot[0:n_train, :]
-    y = tf.constant(ymat, dtype=tf.float32)
+    y_train = tf.constant(ymat, dtype=tf.float32)
     X_train = tf.constant(X_train, dtype=tf.float32)
 
-    X_test = X[n_train : n_train + n_test, :, :]
+    X_test = imgs[n_train : n_train + n_test, :, :]
     y_test = one_hot[n_train : n_train + n_test, :]
 
     X_test = tf.constant(X_test, dtype=tf.float32)
@@ -221,32 +208,28 @@ def prepare_data(
 
     X_train = tf.reshape(X_train, [n_train * d, d])
     X_test = tf.reshape(X_test, [n_test * d, d])
-    features = X[ind[0] * d : (ind[0] + 1) * d, :]
+
+    return X_train, X_test, y_train, y_test
+
+
+def init_laplacian_kernel(
+    imgs,
+    X_train,
+    d,
+    n_train,
+    n_kernel,
+    n_test,
+    c,
+    ind,
+    algebra_matrix,
+    features,
+    ytestdata,
+):
+    features = imgs[ind[0] * d : (ind[0] + 1) * d, :]
     for i in range(n_kernel - 1):
         features = tf.concat(
-            [features, X[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]], axis=0
+            [features, imgs[ind[i + 1] * d : (ind[i + 1] + 1) * d, :]], axis=0
         )
-
-    kernel_gram, Gtmp, gram_test = _init_laplacian_kernel(
-        d,
-        n_train,
-        n_kernel,
-        n_test,
-        c,
-        ind,
-        algebra_matrix,
-        X,
-        features,
-        X_test,
-    )
-
-    c1 = init_kernel_weights(d, n_kernel, n_layers, dim)
-    return y, y_test, kernel_gram, Gtmp, gram_test, c1
-
-
-def _init_laplacian_kernel(
-    d, n_train, n_kernel, n_test, c, ind, algebra_matrix, X, features, ytestdata
-):
     # Project the data into the first input algebra matrix
     X_projected = tf.matmul(X, algebra_matrix[0])
     ytesttmp = tf.matmul(ytestdata, algebra_matrix[0])
@@ -255,9 +238,7 @@ def _init_laplacian_kernel(
     tmp1test = tf.reshape(ytesttmp, [1, n_test, d * d])
     tmpf = tf.reshape(ftmp, [1, n_kernel, d * d])
     for i in range(n_kernel - 1):
-        tmp1 = tf.concat(
-            [tmp1, tf.reshape(X_projected, [1, n_train, d * d])], axis=0
-        )
+        tmp1 = tf.concat([tmp1, tf.reshape(X_projected, [1, n_train, d * d])], axis=0)
     for i in range(n_kernel - 1):
         tmp1test = tf.concat(
             [tmp1test, tf.reshape(ytesttmp, [1, n_test, d * d])], axis=0
@@ -274,8 +255,7 @@ def _init_laplacian_kernel(
     Gtmp = tf.gather(kernel_gram, indices=ind)
 
     gram_test = tf.math.exp(
-        -c
-        * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
+        -c * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
     )
     kernel_gram = tf_kron(kernel_gram, tf.eye(d)) * tf.matmul(
         X, tf.transpose(features, (1, 0))
@@ -291,12 +271,12 @@ if __name__ == "__main__":
 
     # Import MNIST data
     mnist = tf.keras.datasets.mnist
-    (ydata, y), _ = mnist.load_data()
-    ydata = ydata / np.float64(255.0)
+    (imgs, labels), _ = mnist.load_data()
+    imgs = imgs / np.float64(255.0)
 
-    print("Shape of the data:", ydata.shape)
+    print("Shape of the data:", imgs.shape)
 
-    y, labeltest, kernel_gram, Gtmp, Gtest, kernel_weights = prepare_data(
+    X_train, X_test, y_train, y_test = train_test_split(
         d,
         n_train,
         n_kernel,
@@ -305,29 +285,55 @@ if __name__ == "__main__":
         n_layers,
         dim,
         ind,
-        block_matrix_algebra,
-        ydata,
-        y,
+        layer_block_matrices,
+        imgs,
+        labels,
     )
 
-    dense = MLP_Classifier(d)
-    dense.model(tf.zeros((1, d * d), dtype=tf.float32))
-    opt = tf.keras.optimizers.Adam(1e-3)
+    kernel_gram, Gtmp, G_test = init_laplacian_kernel(
+        imgs,
+        X_train,
+        d,
+        n_train,
+        n_kernel,
+        n_test,
+        c,
+        ind,
+        layer_block_matrices,
+        X_test,
+    )
+
+    kernel_weights = init_kernel_weights(d, n_kernel, n_layers, dim)
+
+    dense = MLP_Classifier(n_layers=d)
+    optimizer = tf.keras.optimizers.Adam(1e-3)
     print("Start training with model :", n_layers, "layers")
 
-    for epoch in range(1, epochs + 1, 1):
+    for epoch in range(epochs):
+
+        y_pred_train, y_pred_test, Gpre, GGtmp = forward(
+            kernel_weights,
+            dense,
+            kernel_gram,
+            G_test,
+            Gtmp,
+            n_train,
+            n_test,
+            layer_block_matrices,
+        )
 
         acc, acctest = opti(
-            y=y,
+            y_train=y_train,
+            y_test=y_test,
             c1=kernel_weights,
             dense=dense,
-            optimizer=opt,
+            optimizer=optimizer,
             kernel_gram=kernel_gram,
-            Gtest=Gtest,
+            Gtest=G_test,
             Gtmp=Gtmp,
             n_train=n_train,
             n_test=n_test,
-            algebra_matrix=block_matrix_algebra,
+            algebra_matrix=layer_block_matrices,
         )
 
         print(
