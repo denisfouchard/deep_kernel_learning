@@ -7,7 +7,7 @@ from tensorflow.keras import layers, models
 from tensorflow.keras.models import Model
 import numpy as np
 
-d = 28  # We focus on the C*-algebra of d by d matrices and its C*-subalgebras
+d = 32  # We focus on the C*-algebra of d by d matrices and its C*-subalgebras
 datanum = 200  # number of training samples
 fnum = 40  # number of samples used to construct the represntation space
 tdatanum = 1000  # number of test samples
@@ -17,9 +17,7 @@ L = 2  # number of the layers
 lam1 = 1  # Perron-Frobenius regularlization parameter
 lam2 = 0.001  # regularlization parameter for ||f_L||
 dim = np.array([7, 4])  # dimension of blocks for each layer
-dim1 = np.array(
-    [2, 4]
-)  # dimension of blocks of the parameter a_j for each layer j
+dim1 = np.array([2, 4])  # dimension of blocks of the parameter a_j for each layer j
 
 ind = np.arange(0, fnum, 1, dtype=np.int32)
 
@@ -28,9 +26,9 @@ j = 0
 for j in range(L):
     a.append(np.zeros((d, d)))
     for i in range(int(d / dim1[j])):
-        a[j][
-            dim1[j] * i : dim1[j] * (i + 1), dim1[j] * i : dim1[j] * (i + 1)
-        ] = np.ones((dim1[j], dim1[j]))
+        a[j][dim1[j] * i : dim1[j] * (i + 1), dim1[j] * i : dim1[j] * (i + 1)] = (
+            np.ones((dim1[j], dim1[j]))
+        )
     a[j] = tf.constant(a[j], tf.float32)
 
 
@@ -88,18 +86,14 @@ def opti(label, c1, dense, opt, xtestdata, G, Gtest, Gtmp):
             tmp1test = tf.reshape(ytesttmp, [1, tdatanum, d * d])
             tmpf = tf.reshape(ftmp, [1, fnum, d * d])
             for i in range(fnum - 1):
-                tmp1 = tf.concat(
-                    [tmp1, tf.reshape(ytmp, [1, datanum, d * d])], axis=0
-                )
+                tmp1 = tf.concat([tmp1, tf.reshape(ytmp, [1, datanum, d * d])], axis=0)
             for i in range(fnum - 1):
                 tmp1test = tf.concat(
                     [tmp1test, tf.reshape(ytesttmp, [1, tdatanum, d * d])],
                     axis=0,
                 )
             for i in range(tdatanum - 1):
-                tmpf = tf.concat(
-                    [tmpf, tf.reshape(ftmp, [1, fnum, d * d])], axis=0
-                )
+                tmpf = tf.concat([tmpf, tf.reshape(ftmp, [1, fnum, d * d])], axis=0)
 
             GG = tf.math.exp(
                 -c
@@ -116,9 +110,7 @@ def opti(label, c1, dense, opt, xtestdata, G, Gtest, Gtmp):
             Gpre.append(GGtmp)
             GGtest = tf.math.exp(
                 -c
-                * tf.reduce_sum(
-                    abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2
-                )
+                * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
             )
             GGtest = tf_kron(GGtest, tf.eye(d)) * tf.matmul(
                 ytestdata, tf.transpose(features, (1, 0))
@@ -139,17 +131,13 @@ def opti(label, c1, dense, opt, xtestdata, G, Gtest, Gtmp):
         reg1 = lam1 * (
             tf.norm(Gpre[L - 1], 2)
             + tf.norm(
-                tf.linalg.solve(
-                    0.01 * tf.eye(fnum) + Gpre[L - 1], tf.eye(fnum)
-                ),
+                tf.linalg.solve(0.01 * tf.eye(fnum) + Gpre[L - 1], tf.eye(fnum)),
                 2,
             )
         )
         reg2 = lam2 * tf.norm(
             tf.matmul(
-                tf.matmul(
-                    tf.transpose(c1[L - 1], (1, 0)), tf_kron(GGtmp, tf.eye(d))
-                ),
+                tf.matmul(tf.transpose(c1[L - 1], (1, 0)), tf_kron(GGtmp, tf.eye(d))),
                 c1[L - 1],
             ),
             2,
@@ -180,15 +168,22 @@ def opti(label, c1, dense, opt, xtestdata, G, Gtest, Gtmp):
         grad = tape.gradient(lossreg, c1 + trainable_vars)
         opt.apply_gradients(zip(grad, c1 + trainable_vars))
 
-        return acc, acctest
+        return acc, acctest, lossreg
 
 
 if __name__ == "__main__":
 
     # Import MNIST data
-    mnist = tf.keras.datasets.mnist
-    (ydata, label), _ = mnist.load_data()
+    # mnist = tf.keras.datasets.mnist
+    # (ydata, label), _ = mnist.load_data()
+
+    # Import CIFAR10 data
+    cifar = tf.keras.datasets.cifar10
+    (ydata, label), _ = cifar.load_data()
     ydata = ydata / np.float64(255.0)
+
+    # Change the images to black and white
+    ydata = np.mean(ydata, axis=3)
 
     print("Shape of the data:", ydata.shape)
 
@@ -250,8 +245,7 @@ if __name__ == "__main__":
     Gtmp = tf.gather(G, indices=ind)
 
     Gtest = tf.math.exp(
-        -c
-        * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
+        -c * tf.reduce_sum(abs(tf.transpose(tmp1test, (1, 0, 2)) - tmpf), axis=2)
     )
     G = tf_kron(G, tf.eye(d)) * tf.matmul(ydata, tf.transpose(features, (1, 0)))
     Gtest = tf_kron(Gtest, tf.eye(d)) * tf.matmul(
@@ -278,9 +272,17 @@ if __name__ == "__main__":
     opt = tf.keras.optimizers.Adam(1e-3)
     print("Start training with model :", L, "layers")
 
+    acccuracy_train = []
+    acccuracy_test = []
+    losses = []
+
     for epoch in range(1, epochs + 1, 1):
 
-        acc, acctest = opti(label, c1, dense, opt, labeltest, G, Gtest, Gtmp)
+        acc, acctest, lossreg = opti(label, c1, dense, opt, labeltest, G, Gtest, Gtmp)
+
+        acccuracy_train.append(acc)
+        acccuracy_test.append(acctest)
+        losses.append(lossreg)
 
         # Copy the trainable variables back to the model
 
@@ -292,3 +294,5 @@ if __name__ == "__main__":
             acctest.numpy(),
             flush=True,
         )
+
+        # Plot the results
